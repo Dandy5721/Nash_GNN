@@ -1,1 +1,2 @@
-Nash-GNN  --for reviewing TPAMI
+# Nash-GNN
+Nash-GNN - for reviewing
