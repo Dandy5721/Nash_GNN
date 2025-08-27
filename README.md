@@ -21,3 +21,4 @@ python graph_node_classification.py --grb_mode full --runs 1 --model GCN --time 
 ### 3) Large-scale Node Classification
 ```bash
 python -u graph_node_class_Nash_GNN.py --grb_mode full --runs 1 --model graphcon --time 3  --method euler --function ICNN --gpu 1 --hidden_dim 128 --eval_robo_blk --step_size 1 --input_dropout 0.4 --batch_norm --add_source --grb_split --dataset arxiv
+```
