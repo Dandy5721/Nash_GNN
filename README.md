@@ -1,6 +1,6 @@
 # Nash_GNN
 
-A PyTorch / PyG implementation of Graph Neural Network models for **disease diagnosis on brain connectivity data** and **general graph-based analysis**.
+A PyTorch / PyG implementation of *Nash_GNN* for **disease diagnosis on brain connectivity data** and **general graph-based analysis**.
 
 - **Brain connectivity diagnosis**: models tailored for human connectome / disease datasets.
 - **Graph-based analysis**:
