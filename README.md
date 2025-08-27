@@ -28,6 +28,7 @@ python -u graph_node_class_Nash_GNN.py --grb_mode full --runs 1 --model graphcon
 python -u graph_classification.py -data mutag -batch 128 -hid_dim 64 -lr 0.01 -model 'GCN' -gpu 0 
 ```
 
-### 4) Brain connectome Classification
-
-# python -u gnn_misg_disease_5fold.py --dataset 'adni'  --inductive --eval_robo --eval_attack 'vanilla' --runs 5 --model graphbel --gpu 0 > /ram/USERS/bendan/NIPS2024/NeurIPS-2023-HANG-Robustness/graph_cls_results/"adni_graphbel5".txt
+### 4) Brain Connectomes Classification
+```bash
+# python -u graph_classification_human_connectomes.py --dataset 'adni' --runs 5 --model graphbel --gpu 0 
+```
