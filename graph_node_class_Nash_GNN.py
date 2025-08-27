@@ -7,21 +7,26 @@ from attacks.rnd import RND
 from attacks.vanilla import Vanilla
 from attacks.speit import SPEIT
 from attacks.pgd import PGD
+from sklearn.preprocessing import LabelEncoder
 import argparse
 import os
+from sklearn.preprocessing import StandardScaler
+import pandas as pd
 import platform
-# from grb.utils.normalize import GCNAdjNorm, SAGEAdjNorm
+from grb.utils.normalize import GCNAdjNorm, SAGEAdjNorm
 from models.beltrami import *
 from models.MeanCurv import *
 import grb
 import numpy as np
 import torch
+import numpy as np
 import torch.nn.functional as F
 import torch_geometric.transforms as T
 from grb.dataset import Dataset
 from ogb.nodeproppred import Evaluator, PygNodePropPredDataset
 from torch_geometric.data import Data
-from torch_geometric.datasets import Amazon, CitationFull, Coauthor, Planetoid, WebKB, WikipediaNetwork, Actor
+from torch_geometric.transforms import ToSparseTensor
+from torch_geometric.datasets import Amazon, CitationFull, Coauthor, Planetoid, WebKB, WikipediaNetwork, Actor, OGB_MAG, TUDataset
 from torch_geometric.utils.sparse import to_edge_index
 from attacks.flag import flag
 from load_graph import generate_grb_split, generate_percent_split, generate_split
@@ -29,11 +34,12 @@ from models.model_pyg import *
 from utils import prune_graph, set_rand_seed, inductive_split, get_index_induc, feat_normalize, target_select
 from load_graph import load_heter_g
 import timeit
-from ICNN_model import GNN_graphcon
+from hang_model import GNN_graphcon
 import time
 import sys
 import json
-
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 torch.autograd.set_detect_anomaly(True)
 if "windows" in platform.system().lower():
     base_dir = "E:/.datasets"
@@ -81,8 +87,13 @@ def train_flag(model, x, adj_t, y, train_idx, optimizer, device, args):
 @torch.no_grad()
 def test(model, x, adj_t, y, split_idx, evaluator):
     model.eval()
-
+    start_time = time.time()
+    num_samples = x.size(0) 
     out = model(x, adj_t)
+    end_time = time.time()
+    train_time = ((end_time - start_time))*1000
+    print(num_samples)
+    print(f'testsub time: {train_time:.4f} ms')
     y_pred = out.argmax(dim=-1, keepdim=True)
 
     train_acc = evaluator.eval({
@@ -103,8 +114,13 @@ def test(model, x, adj_t, y, split_idx, evaluator):
 @torch.no_grad()
 def sep_test(model, x, adj_t, y, target_idx, evaluator):
     model.eval()
+    start_time = time.time()
+    num_samples = x.size(0) 
     out = model(x, adj_t)
-
+    end_time = time.time()
+    train_time = ((end_time - start_time))*1000
+    print(num_samples) 
+    print(f'testtestsubs time: {train_time:.4f} ms')
     out = out[target_idx] if target_idx.size(0) < out.size(0) else out
     y = y[target_idx] if out.size(0) < y.size(0) else y
 
@@ -142,14 +158,85 @@ def eval_robustness(model, features, adj, target_idx, labels, device, args, run)
         return feat_attack, adj_attack, target_idx
 
     # initialize the corresponding adversary
-    
-    attacker = Vanilla(epsilon=args.attack_lr,
-            n_epoch=args.attack_epoch,
-            n_inject_max= args.n_inject_max,
-            n_edge_max= args.n_edge_max,
-            feat_lim_min=args.feat_lim_min,
-            feat_lim_max=args.feat_lim_max,
-            device=device)
+    if "speit" in args.eval_attack.lower():
+        # multi-layer is the original proposal, 
+        # but the attack perf is bad in small graphs 
+        attacker = SPEIT(epsilon=args.attack_lr,
+                   n_epoch=args.attack_epoch,
+                   n_inject_max= args.n_inject_max,
+                   n_edge_max= args.n_edge_max,
+                   feat_lim_min=args.feat_lim_min,
+                   feat_lim_max=args.feat_lim_max,
+                   inject_mode="multi-layer" if "ml" in args.eval_attack.lower() else "random",
+                   device=device,
+                   early_stop=args.early_stop) 
+    elif args.eval_attack.lower() == "gia":
+        attacker = GIA(epsilon=args.attack_lr,
+                 n_epoch=args.attack_epoch,
+                 n_inject_max= args.n_inject_max,
+                 n_edge_max= args.n_edge_max,
+                 feat_lim_min=args.feat_lim_min,
+                 feat_lim_max=args.feat_lim_max,
+                 device=device,
+                 early_stop=args.early_stop,
+                 disguise_coe=args.disguise_coe,
+                 hinge=args.hinge)
+    elif args.eval_attack.lower() == "seqgia":
+        attacker = SEQGIA(epsilon=args.attack_lr,
+                 n_epoch=args.attack_epoch,
+                 a_epoch=args.agia_epoch,
+                 n_inject_max= args.n_inject_max,
+                 n_edge_max= args.n_edge_max,
+                 feat_lim_min=args.feat_lim_min,
+                 feat_lim_max=args.feat_lim_max,
+                 device=device,
+                 early_stop=args.early_stop,
+                 disguise_coe=args.disguise_coe,
+                 sequential_step=args.sequential_step,
+                 injection=args.injection,
+                 feat_upd=args.feat_upd,
+                 branching=args.branching,
+                 iter_epoch=args.iter_epoch,
+                 agia_pre=args.agia_pre,
+                 hinge=args.hinge)
+    elif args.eval_attack.lower() == "pgd":
+        attacker = PGD(epsilon=args.attack_lr,
+                 n_epoch=args.attack_epoch,
+                 n_inject_max= args.n_inject_max,
+                 n_edge_max= args.n_edge_max,
+                 feat_lim_min=args.feat_lim_min,
+                 feat_lim_max=args.feat_lim_max,
+                 device=device,
+                 early_stop=args.early_stop)
+    elif args.eval_attack.lower() in ["agia"]:
+        attacker = AGIA(epsilon=args.attack_lr,
+                 n_epoch=args.attack_epoch,
+                 a_epoch=args.agia_epoch,
+                 n_inject_max= args.n_inject_max,
+                 n_edge_max= args.n_edge_max,
+                 feat_lim_min=args.feat_lim_min,
+                 feat_lim_max=args.feat_lim_max,
+                 device=device,
+                 early_stop=args.early_stop,
+                 disguise_coe=args.disguise_coe,
+                 opt=args.eval_attack.lower()[0],
+                 iter_epoch=args.iter_epoch)
+    elif args.eval_attack.lower() == "rnd":
+        attacker = RND(epsilon=args.attack_lr,
+                 n_epoch=args.attack_epoch,
+                 n_inject_max= args.n_inject_max,
+                 n_edge_max= args.n_edge_max,
+                 feat_lim_min=args.feat_lim_min,
+                 feat_lim_max=args.feat_lim_max,
+                 device=device)
+    else:
+        attacker = Vanilla(epsilon=args.attack_lr,
+                 n_epoch=args.attack_epoch,
+                 n_inject_max= args.n_inject_max,
+                 n_edge_max= args.n_edge_max,
+                 feat_lim_min=args.feat_lim_min,
+                 feat_lim_max=args.feat_lim_max,
+                 device=device)
     attack_labels = labels if args.attack_label else None
     if args.eval_target:
         target_idx = target_select(model,adj,features,labels,target_idx,args.target_num)
@@ -208,7 +295,7 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--l2decay', type=float, default=0.0)
-    parser.add_argument('--epochs', type=int, default=500)
+    parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--runs', type=int, default=10)
     parser.add_argument('--seed', type=int, default=0)
 
@@ -402,15 +489,247 @@ def main():
     else:
         device = 'cpu'
     device = torch.device(device)
-
-    if args.dataset.lower() == 'arxiv':
-        dataset = PygNodePropPredDataset(name='ogbn-arxiv', transform=T.ToSparseTensor(), root=base_dir)
+    node_classification_datasets = ["arxiv", "products", "proteins"]
+    # Tudataset_names = [
+    # 'ENZYMES', 'MUTAG', 'NCI1', 'NCI109', 'PROTEINS', 'PPI', 'REDDIT-BINARY',
+    # 'REDDIT-MULTI-5K', 'COLLAB', 'IMDB-BINARY', 'IMDB-MULTI', 'PTC', 'DD', 'REDDIT-MULTI-12K',
+    # 'COX2', 'BZR', 'BZR-MD', 'DHFR', 'MUTAG', 'PTC_MR', 'AIDS', 'CORA', 'CITATION', 'D&D', 'ENZYMES']
+    Tudataset_names = [
+    'enzymes', 'mutag', 'proteins', 'ppi', 'reddit-binary', 'reddit-multi-5k', 
+    'collab', 'imdb-binary', 'imdb-multi', 'ptc', 'dd'
+]
+    if args.dataset.lower() in ["arxiv", "products", "proteins", "mag","author","papers100M"]:
+        dataset = PygNodePropPredDataset(name=f'ogbn-{args.dataset.lower()}', transform=T.ToSparseTensor(), root=base_dir)
+        # dataset = PygNodePropPredDataset(name='ogbn-arxiv', transform=T.ToSparseTensor(), root=base_dir)
         data = dataset[0]
+        print(data)
         data.adj_t = data.adj_t.to_symmetric()
         num_classes = dataset.num_classes
+    elif args.dataset.lower() in ["proteins", "mag","author","papers100M"]:
+        dataset = PygNodePropPredDataset(name=f'ogbn-{args.dataset.lower()}', transform=T.ToSparseTensor(), root=base_dir)
+        # dataset = PygNodePropPredDataset(name='ogbn-arxiv', transform=T.ToSparseTensor(), root=base_dir)
+        data = dataset[0]
+        print(data)
+        data.adj_t = data.adj_t.to_symmetric()
+        num_classes = dataset.num_classes
+    elif args.dataset.lower() in ['pokec']:
+        profile_columns = [
+            'user_id', 'public', 'completion_percentage', 'gender', 'region', 'last_login',
+            'registration', 'age', 'body', 'I_am_working_in_field', 'spoken_languages', 'hobbies',
+            'I_most_enjoy_good_food', 'pets', 'body_type', 'my_eyesight', 'eye_color', 'hair_color',
+            'hair_type', 'completed_level_of_education', 'favourite_color', 'relation_to_smoking',
+            'relation_to_alcohol', 'sign_in_zodiac', 'on_pokec_i_am_looking_for', 'love_is_for_me',
+            'relation_to_casual_sex', 'my_partner_should_be', 'marital_status', 'children',
+            'relation_to_children', 'I_like_movies', 'I_like_watching_movie', 'I_like_music',
+            'I_mostly_like_listening_to_music', 'the_idea_of_good_evening', 'I_like_specialties_from_kitchen',
+            'fun', 'I_am_going_to_concerts', 'my_active_sports', 'my_passive_sports', 'profession',
+            'I_like_books', 'life_style', 'music', 'cars', 'politics', 'relationships', 'art_culture',
+            'hobbies_interests', 'science_technologies', 'computers_internet', 'education', 'sport',
+            'movies', 'travelling', 'health', 'companies_brands', 'more'
+        ]
+
+        edges = pd.read_csv("soc-pokec-relationships.txt", sep='\t', header=None, names=['source', 'target'])
+        profiles = pd.read_csv("soc-pokec-profiles.txt", sep='\t', header=None, names=profile_columns)
+
+        print(profiles[['user_id', 'age', 'education']].head())
+
+        all_node_ids = pd.unique(edges[['source', 'target']].values.ravel())
+        id_map = {id_: i for i, id_ in enumerate(all_node_ids)}
+
+        edges['source'] = edges['source'].map(id_map)
+        edges['target'] = edges['target'].map(id_map)
+
+        profiles = profiles[profiles['user_id'].isin(id_map)]
+        profiles['node_idx'] = profiles['user_id'].map(id_map)
+        profiles = profiles.set_index('node_idx').sort_index()
+
+        num_nodes = len(id_map)
+        row = torch.tensor(edges['source'].values, dtype=torch.long)
+        col = torch.tensor(edges['target'].values, dtype=torch.long)
+
+        edge_index = torch.stack([row, col], dim=0)
+
+        feature_cols = ['age', 'completion_percentage', 'education']
+
+        # 处理 education 的类别编码
+        le = LabelEncoder()
+        profiles['education'] = le.fit_transform(profiles['education'].fillna('unknown'))
+        for col in ['age', 'completion_percentage', 'education']:
+            profiles[col] = pd.to_numeric(profiles[col], errors='coerce')
+
+        x = torch.tensor(profiles[feature_cols].fillna(0).values, dtype=torch.float)
+
+        # 分类标签示例：用completion_percentage分箱
+        bins = [0, 25, 50, 75, 100]
+        labels = [0, 1, 2, 3]
+        profiles['completion_label'] = pd.cut(profiles['completion_percentage'], bins=bins, labels=labels, include_lowest=True)
+        y = torch.tensor(profiles['completion_label'].cat.codes.values, dtype=torch.long)
+
+        data = Data(x=x, edge_index=edge_index, y=y)
+        
+        adj = sp.coo_matrix((np.ones(row.size(0)), (row.numpy(), col.numpy())), shape=(num_nodes, num_nodes))
+        adj = (adj + adj.T).astype(bool).astype(int)
+
+        adj_t = torch.sparse_coo_tensor(
+            torch.tensor([adj.row, adj.col], dtype=torch.long),
+            torch.ones(len(adj.row)),
+            size=(num_nodes, num_nodes)
+        )
+
+        data.adj_t = adj_t
+
+        num_classes = int(y.max().item() + 1)
+        print(f'num_classes = {num_classes}')
+        print(data)
+    elif args.dataset.lower() == 'pokec2':
+        EDGE_FILE = 'soc-pokec-relationships.txt'
+        NODE_FILE = 'soc-pokec-profiles.txt'
+
+        # Step 1: 加载边
+        edge_df = pd.read_csv(EDGE_FILE, sep='\t', header=0, names=['source', 'target'])
+        edge_index = torch.tensor(edge_df.values.T, dtype=torch.long)
+
+        # Step 2: 加载节点特征
+        node_df = pd.read_csv(NODE_FILE, sep='\t', header=None)
+        node_df_numeric = node_df.select_dtypes(include=['number']).fillna(0)
+        scaler = StandardScaler()
+        x = torch.tensor(scaler.fit_transform(node_df_numeric.values), dtype=torch.float)
+
+        # Step 3: 提取标签（假设第4列为标签）
+        y_raw = torch.tensor(node_df.iloc[:, 3].values, dtype=torch.long)
+
+        # 清理非法标签值（如 long 的最小值）
+        invalid_val = torch.iinfo(torch.long).min
+        y_raw[y_raw == invalid_val] = 0
+
+        # Step 4: 构建图结构
+        data = Data(x=x, edge_index=to_undirected(edge_index))
+        data.num_nodes = int(data.edge_index.max().item()) + 1
+
+        # 对齐标签长度：补全缺失标签
+        if y_raw.size(0) < data.num_nodes:
+            pad_len = data.num_nodes - y_raw.size(0)
+            pad = torch.zeros(pad_len, dtype=y_raw.dtype)
+            data.y = torch.cat([y_raw, pad], dim=0)
+        else:
+            data.y = y_raw
+
+        # 将非 0/1 的标签设置为 0（二分类清理）
+        data.y[~((data.y == 0) | (data.y == 1))] = 0
+        data.y = data.y.clone()  # 避免引用问题
+
+        # 构建稀疏邻接矩阵
+        data.adj_t = SparseTensor.from_edge_index(
+            data.edge_index, sparse_sizes=(data.num_nodes, data.num_nodes)
+        )
+
+        # 打印检查信息
+        print(f"data.x: {data.x.shape}")
+        print(f"data.edge_index: {data.edge_index.shape}")
+        print(f"data.y: {data.y.shape}")
+        print(f"Max node ID in edge_index: {data.edge_index.max().item()}")
+        print(f"data.num_nodes: {data.num_nodes}")
+        print("Unique labels:", torch.unique(data.y))
+        print("Label counts:", torch.bincount(data.y.to(torch.long)))
+
+        # 分类数（一般为2）
+        num_classes = int(data.y.max().item()) + 1
+        print(f"Number of classes: {num_classes}")
+    elif args.dataset.lower() == 'pokec3':
+        TARGET_NUM_NODES = 1632800  # 基准节点数（以 x 为标准）
+
+        EDGE_FILE = 'soc-pokec-relationships.txt'
+        NODE_FILE = 'soc-pokec-profiles.txt'
+
+        # Step 1: 加载边
+        edge_df = pd.read_csv(EDGE_FILE, sep='\t', header=0, names=['source', 'target'])
+        edge_index = torch.tensor(edge_df.values.T, dtype=torch.long)
+
+        # Step 2: 加载节点特征
+        node_df = pd.read_csv(NODE_FILE, sep='\t', header=None)
+        node_df_numeric = node_df.select_dtypes(include=['number']).fillna(0)
+        scaler = StandardScaler()
+        x_full = torch.tensor(scaler.fit_transform(node_df_numeric.values), dtype=torch.float)
+        x = x_full[:TARGET_NUM_NODES]  # 只保留前 N 个节点
+
+        # Step 3: 提取标签（假设第4列为标签）
+        y_raw_full = torch.tensor(node_df.iloc[:, 3].values, dtype=torch.long)
+        invalid_val = torch.iinfo(torch.long).min
+        y_raw_full[y_raw_full == invalid_val] = 0
+        if y_raw_full.size(0) >= TARGET_NUM_NODES:
+            y_raw = y_raw_full[:TARGET_NUM_NODES]
+        else:
+            pad_len = TARGET_NUM_NODES - y_raw_full.size(0)
+            pad = torch.full((pad_len,), -1, dtype=y_raw_full.dtype)
+            y_raw = torch.cat([y_raw_full, pad], dim=0)
+
+        # 清理标签：只保留0和1，其余设置为0
+        y_raw[~((y_raw == 0) | (y_raw == 1))] = 0
+        y = y_raw.clone()
+
+        # Step 4: 构建图结构
+        # 过滤掉节点 >= TARGET_NUM_NODES 的边
+        mask = (edge_index[0] < TARGET_NUM_NODES) & (edge_index[1] < TARGET_NUM_NODES)
+        edge_index = edge_index[:, mask]
+
+        # 构建数据对象
+        data = Data(x=x, edge_index=to_undirected(edge_index), y=y)
+        data.num_nodes = TARGET_NUM_NODES
+
+        # 构建稀疏邻接矩阵
+        data.adj_t = SparseTensor.from_edge_index(
+            data.edge_index, sparse_sizes=(TARGET_NUM_NODES, TARGET_NUM_NODES)
+        )
+
+        # 打印检查信息
+        print(f"data.x: {data.x.shape}")
+        print(f"data.edge_index: {data.edge_index.shape}")
+        print(f"data.y: {data.y.shape}")
+        print(f"Max node ID in edge_index: {data.edge_index.max().item()}")
+        print(f"data.num_nodes: {data.num_nodes}")
+        print("Unique labels:", torch.unique(data.y))
+        print("Label counts:", torch.bincount(data.y.to(torch.long)))
+        
+        # 分类数（一般为2）
+        num_classes = int(data.y.max().item()) + 1
+        print(f"Number of classes: {num_classes}")
+
+    elif args.dataset.lower() in ['snap-patent']:
+        edges = pd.read_csv('/ram/USERS/bendan/NIPS2024/NeurIPS-2023-HANG-Robustness/cit-Patents.txt', comment='#', sep='\t', header=None, names=['src', 'dst'])
+        all_node_ids = pd.unique(edges[['src', 'dst']].values.ravel())
+        id_map = {id_: i for i, id_ in enumerate(all_node_ids)}
+
+        # 重映射节点编号为 0-based 连续整数
+        edges['src'] = edges['src'].map(id_map)
+        edges['dst'] = edges['dst'].map(id_map)
+
+        # 构建 edge_index
+        row = torch.tensor(edges['src'].values, dtype=torch.long)
+        col = torch.tensor(edges['dst'].values, dtype=torch.long)
+        edge_index = torch.stack([row, col], dim=0)
+
+        # 构建空特征（如果没有特征）
+        num_nodes = len(id_map)
+        x = torch.eye(num_nodes) if num_nodes < 10000 else torch.randn((num_nodes, 16))  # 或随机特征
+
+        # 构造 PyG Data 对象
+        data = Data(x=x, edge_index=edge_index)
+        data.y = torch.zeros(data.num_nodes, dtype=torch.long)  # 统一设为 0
+        transform = ToSparseTensor()
+        data = transform(data)
+        num_classes = int(data.y.max().item()) + 1
     elif args.dataset.lower() in ['cora','citeseer']:
         transform = T.Compose([T.ToSparseTensor()])
         dataset = Planetoid(base_dir, args.dataset.lower(), transform=transform)
+        data = dataset[0]
+        # indices, values = to_edge_index(data.adj_t)
+        data.adj_t = data.adj_t.to_symmetric()
+        # data.adj_t = torch.sparse_coo_tensor(indices, values, size=(data.x.shape[0], data.x.shape[0]))
+        # print(data.adj_t.indices)
+        num_classes = dataset.num_classes
+    elif args.dataset.lower() in Tudataset_names:
+        transform = T.Compose([T.ToSparseTensor()])
+        dataset = TUDataset(root = base_dir, name=f'{args.dataset.lower()}', transform=transform)
         data = dataset[0]
         # indices, values = to_edge_index(data.adj_t)
         data.adj_t = data.adj_t.to_symmetric()
@@ -429,6 +748,37 @@ def main():
         data = dataset[0]
         data.adj_t = data.adj_t.to_symmetric()
         num_classes = dataset.num_classes
+    elif args.dataset.lower() in ["squirrel-filtered", "chameleon-filtered","roman_empire"]:
+    # 数据转换：ToSparseTensor 用于将数据转换为稀疏张量
+        transform = T.Compose([T.ToSparseTensor()])
+
+        # 加载数据
+        data = np.load(os.path.join('/ram/USERS/bendan/NIPS2024/heterophilous-graphs/data', f'{args.dataset.replace("-", "_")}.npz'))
+        print(data)
+        # 将 numpy 数据转换为 torch.tensor
+        node_features = torch.tensor(data['node_features'], dtype=torch.float)
+        labels = torch.tensor(data['node_labels'], dtype=torch.long)
+        edges = torch.tensor(data['edges'], dtype=torch.long)
+
+        # 构造图的数据对象（Data object）
+        edge_index = edges.t().contiguous()  # 转置为 edge_index 格式
+        edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
+        edge_attr = None  # 如果没有边的特征，这里设为 None
+
+        # 创建 Data 对象
+        data = Data(x=node_features, edge_index=edge_index, edge_attr=edge_attr, y=labels)
+        adj_t = SparseTensor(row=edge_index[0], col=edge_index[1], sparse_sizes=(node_features.size(0), node_features.size(0)))
+        data.adj_t = adj_t
+        num_features = node_features.size(1) 
+        num_nodes = node_features.size(0)
+        data.num_nodes= num_nodes
+        data.num_features = num_features
+        print(data.edge_index)
+        # 处理邻接矩阵对称性
+        # data.adj_t = data.edge_index.to_symmetric()
+
+        # 获取类别数
+        num_classes = len(labels.unique())
     elif args.dataset.lower() in ["texas","wisconsin","cornell"]:
         transform = T.Compose([T.ToSparseTensor()])
         dataset = WebKB(base_dir, args.dataset.lower(), transform=transform)
@@ -447,7 +797,7 @@ def main():
         data = dataset[0]
         data.adj_t = data.adj_t.to_symmetric()
         num_classes = dataset.num_classes
-
+        
     elif args.dataset.lower() in ["computers"]:
         transform = T.Compose([T.ToSparseTensor()])
         dataset = Amazon(base_dir, args.dataset.lower(), transform=transform)
@@ -529,7 +879,7 @@ def main():
         model = BELTRAMI(in_features=data.num_features,
                         out_features=num_classes,
                         hidden_features=64,
-                        n_layers=3,
+                        n_layers=args.num_layers,
                         adj_norm_func=GCNAdjNorm,
                         layer_norm=True,
                         residual=False,
@@ -538,7 +888,7 @@ def main():
         model = MEANCURV(in_features=data.num_features,
                         out_features=num_classes,
                         hidden_features=64, 
-                        n_layers=3,
+                        n_layers=args.num_layers,
                         adj_norm_func=GCNAdjNorm,
                         layer_norm=True,
                         residual=False,
@@ -578,7 +928,7 @@ def main():
                     args.dropout, layer_norm_first=args.layer_norm_first,
                     use_ln=args.use_ln, heads=heads,att_dropout =0.4)
     elif args.model.lower() == "rgat":
-        if args.dataset.lower() in ["arxiv",'grb-citeseer']:
+        if args.dataset.lower() in ["arxiv","products","proteins",'grb-citeseer']:
             threshold = 0.2
         elif args.dataset.lower() == "grb-flickr":
             threshold = 0.3
@@ -606,11 +956,11 @@ def main():
         model = SGCN(data.num_features, args.hidden_channels,
                     num_classes, args.num_layers,
                     args.dropout, layer_norm_first=args.layer_norm_first)
-    elif args.model.lower() == "graphcon_2":
+    elif args.model.lower() == "graphcon":
         opt = vars(args)
         opt['num_nodes'] = data.num_nodes
         opt['num_classes'] = num_classes
-        model = GNN_graphcon(opt, dataset.num_features, device)
+        model = GNN_graphcon(opt, data.num_features, device)
     else:
         print("Warning: Model {} not recognized. wii use GCN".format(args.model))
         model = GCN(data.num_features, args.hidden_channels,
@@ -618,17 +968,23 @@ def main():
                     args.dropout, layer_norm_first=args.layer_norm_first,
                     use_ln=args.use_ln)    
     print(model)
-
-    evaluator = Evaluator(name='ogbn-arxiv')
+    if args.dataset.lower() in ["arxiv", "products", "proteins", "mag","papers100M"]:
+        evaluator = Evaluator(name=f'ogbn-{args.dataset.lower()}')
+    else:
+        evaluator = Evaluator(name='ogbn-arxiv')
     model = model.to(device)
 
     train_idx = split_idx['train'].to(device)
     val_idx = split_idx['valid'].to(device)
     test_idx = split_idx['test'].to(device)
-    data = data.to(device)
+    # data = data.to(device)
     if args.inductive:
         # inductive split will automatically use relative ids for splitted graphs
         adj_train, adj_val, adj_test = inductive_split(data.adj_t, split_idx)
+        adj_train = adj_train.to(device)
+        adj_val   = adj_val.to(device)
+        adj_test  = adj_test.to(device)
+        data = data.to(device)
         x_train, y_train = data.x[train_idx], data.y[train_idx]
         train_val_idx, _ = torch.sort(torch.cat([train_idx,val_idx],dim=0))
         x_val, y_val = data.x[train_val_idx], data.y[val_idx]
@@ -663,6 +1019,19 @@ def main():
         json.dump(command_args, f)
         f.write("\n")
 
+    # # print the index of  y_train ==1
+    # print("y_train == 0 index: ", (y_train == 0).nonzero(as_tuple=True)[0])
+    # print("y_train == 1 index: ", (y_train == 1).nonzero(as_tuple=True)[0])
+    # print("y_train == 2 index: ", (y_train == 2).nonzero(as_tuple=True)[0])
+    # print("y_train == 3 index: ", (y_train == 3).nonzero(as_tuple=True)[0])
+    # print("y_train == 4 index: ", (y_train == 4).nonzero(as_tuple=True)[0])
+    #
+    # print("y_test == 0 index: ", (y_test == 0).nonzero(as_tuple=True)[0])
+    # print("y_test == 1 index: ", (y_test == 1).nonzero(as_tuple=True)[0])
+    # print("y_test == 2 index: ", (y_test == 2).nonzero(as_tuple=True)[0])
+    # print("y_test == 3 index: ", (y_test == 3).nonzero(as_tuple=True)[0])
+    # print("y_test == 4 index: ", (y_test == 4).nonzero(as_tuple=True)[0])
+
     for run in range(args.runs):
         # set_rand_seed(run)  # set up seed for reproducibility 
         final_train_acc, best_val, final_test = 0,0,0
@@ -673,16 +1042,27 @@ def main():
                 model.reset_parameters()
             optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2decay)
         tot_time = 0
+        tot_train_time = 0
         for epoch in range(1, args.epochs + 1):
             start = timeit.default_timer()
             if args.attack == 'vanilla' :
                 # normal supervised training
                 # print(adj_train.edge_index)
+                start_time = time.time() 
                 loss = train(model, x_train, adj_train, y_train, train_idx, optimizer)
+                end_time = time.time()
+                train_time = end_time - start_time
+                tot_train_time += train_time
+                print(f'train time: {train_time:.4f} seconds')
             else :
                 # train the model for some epochs
                 if epoch <= args.pre_epochs:
+                    start_time = time.time() 
                     loss = train(model, x_train, adj_train, y_train, train_idx, optimizer)
+                    end_time = time.time()
+                    train_time = end_time - start_time
+                    tot_train_time += train_time
+                    print(f'train time: {train_time:.4f} seconds')
                 else:
                     # adv. training
                     loss = train_flag(model, x_train, adj_train, data.y, train_idx, optimizer, device, args)
@@ -691,10 +1071,18 @@ def main():
                 if args.inductive:
                     train_acc = sep_test(model,x_train,adj_train,y_train,train_idx,evaluator)
                     val = sep_test(model,x_val,adj_val,y_val,tval_idx_val,evaluator)
+                    start_time = time.time() 
                     tst = sep_test(model,x_test,adj_test,y_test,test_idx,evaluator)
+                    end_time = time.time()
+                    train_time = end_time - start_time
+                    tot_train_time += train_time
+                    print(f'test time: {train_time:.4f} seconds')
                 else:
+                    start_time = time.time() 
                     train_acc, val, tst = test(model, x_test, adj_test, y_test, split_idx, evaluator)
-
+                    end_time = time.time()
+                    test_time = end_time - start_time
+                    print(f'test time: {test_time:.4f} seconds')
                 if val > best_val :
                     best_val = val
                     final_test = tst
@@ -706,10 +1094,117 @@ def main():
             stop = timeit.default_timer()
             tot_time += stop-start
         print(f'Run{run} train: {final_train_acc}, val:{best_val}, test:{final_test}')
-        print(f'Avg train time {tot_time/args.epochs}')
+        print(f'Avg train time {tot_train_time/args.epochs}')
         trains.append(final_train_acc)
         vals.append(best_val)
         tests.append(final_test)
+
+        
+        if args.eval_robo and not args.batch_eval:
+            if args.best_weights and args.epochs>0:
+                model.load_state_dict(best_weights)
+            test_idx = split_idx["test"].to(device)
+            
+            target_idx = test_idx
+            start_time = time.time()
+            x_attack, adj_attack, target_idx = eval_robustness(model, x_test, adj_test, target_idx, data.y, device, args, run)
+            end_time = time.time()
+            test_time = end_time - start_time
+            print(f'test time: {test_time:.4f} seconds')
+            x_new = torch.cat([x_test,x_attack],dim=0) if x_attack != None else x_test
+            if len(args.save_attack) > 0 and not args.eval_robo_blk:
+                atkg_path = os.path.join(args.save_attack,args.dataset)+f"_{args.eval_attack}"
+                if not os.path.exists(atkg_path):
+                    os.makedirs(atkg_path)
+                # targeted attack
+                if args.eval_target:
+                    atkg_path += "_target"
+                # multi-split eval
+                if args.mul_run>0 and run > 0:
+                    atkg_path +=f"_{run}.pt"
+                else:
+                    atkg_path += ".pt"
+
+                print(f"saving the generated atkg to {atkg_path}")
+                # saving format of the perturbed graph
+                adj_row, adj_col = adj_attack.coo()[:2]
+                new_data = Data(edge_index=torch.stack([adj_row,adj_col], dim=0),
+                                x=x_new,y=data.y)
+                new_data.train_mask = data.train_mask
+                new_data.val_mask = data.val_mask
+                new_data.test_mask= data.test_mask
+                new_data.target_idx= target_idx
+                # new_data.orig_edge_size = adj_test.coo()[0].size(0)
+                torch.save(new_data.cpu(),atkg_path)
+
+            tst = sep_test(model,x_new,adj_attack,data.y,target_idx,evaluator)
+            robo_tests.append(tst)
+            print(f"Test robustness accuracy: {tst}")
+        elif args.batch_eval:
+            if args.best_weights and args.epochs>0:
+                model.load_state_dict(best_weights)
+            target_idx = test_idx
+            for (i,atk) in enumerate(args.batch_attacks):
+                for j in range(max(args.mul_run,1)):
+                    # not necessary to test vanilla, rnd, speit multiple times
+                    if j>=1 and atk.lower() in ["vanilla","rnd","speitml"]:
+                        continue
+                    args.eval_attack = atk
+                    start_time = start.time()
+                    x_attack, adj_attack, target_idx = eval_robustness(model, x_test, adj_test, target_idx, data.y,device, args, run=j)
+                    end_time = time.time()
+                    test_time = end_time - start_time
+                    print(f'test time: {test_time:.4f} seconds')
+                    x_new = torch.cat([x_test,x_attack],dim=0) if x_attack != None else x_test
+                    tst = sep_test(model,x_new,adj_attack,data.y,target_idx,evaluator)
+                    if run == 0:
+                        batch_robo_tests[atk] = [tst]
+                    else:
+                        batch_robo_tests[atk].append(tst)
+                    print(f"Test robustness accuracy under {atk}: {tst}")
+                    # save gpu memory
+                    x_attack.cpu()
+                    adj_attack.cpu()
+                    target_idx.cpu()
+                    torch.cuda.empty_cache()
+
+        # write to file_log
+        with open(file_log, "a") as f:
+            f.write(f"Run time {run}\n")
+            f.write(f"Average train accuracy: {np.mean(trains)} and {np.std(trains)}\n")
+            f.write(f"Average val accuracy: {np.mean(vals)}  and {np.std(vals)}\n")
+            f.write(f"Average test accuracy: {np.mean(tests)} and {np.std(tests)}\n")
+            f.write(f"Average test robustness accuracy: {np.mean(robo_tests)} and  {np.std(robo_tests)}\n")
+
+
+    print('')
+    print(f"Average train accuracy: {np.mean(trains)} ± {np.std(trains)}")
+    print(f"Average val accuracy: {np.mean(vals)} ± {np.std(vals)}")
+    print(f"Average test accuracy: {np.mean(tests)} ± {np.std(tests)}")
+
+    if args.eval_robo and not args.batch_eval:
+        print(f"Average test robustness accuracy: {np.mean(robo_tests)} and  {np.std(robo_tests)}")
+
+
+
+
+
+    elif args.batch_eval:
+        for (i,atk) in enumerate(args.batch_attacks):
+            print(f"Average test robustness accuracy under {atk}: {np.mean(batch_robo_tests[atk])} ± {np.std(batch_robo_tests[atk])}")
+        if report_batch != None:
+            print("name: ")
+            for (i,atk) in enumerate(report_batch):
+                print("{:.5s},".format(atk),end="")
+            print()
+            print("mean: ")
+            for (i,atk) in enumerate(report_batch):
+                print("{:.2f},".format(np.mean(batch_robo_tests[atk])*100),end="")
+            print()
+            print(" std: ")
+            for (i,atk) in enumerate(report_batch):
+                print("{:.2f},".format(np.std(batch_robo_tests[atk])*100),end="")
+            print()
     
 if __name__ == "__main__":
 
