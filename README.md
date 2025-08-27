@@ -16,14 +16,18 @@ A PyTorch / PyG implementation of Graph Neural Network models for **disease diag
 
 ### 1) Node Classification
 ```bash
-python graph_node_classification.py --grb_mode full --runs 1 --model GCN --time 3  --method euler --function ICNN --gpu 1 --hidden_dim 128 --eval_robo_blk --step_size 1 --input_dropout 0.4 --batch_norm --add_source --grb_split --dataset Cora
+python graph_node_classification.py --grb_mode full --runs 1 --model GCN --time 3  --method euler --function icnn --gpu 1 --hidden_dim 128 --eval_robo_blk --step_size 1 --input_dropout 0.4 --batch_norm --add_source --grb_split --dataset Cora
 ```
 ### 2) Large-scale Node Classification
 ```bash
-python -u graph_node_class_Nash_GNN.py --grb_mode full --runs 1 --model graphcon --time 3  --method euler --function ICNN --gpu 1 --hidden_dim 128 --eval_robo_blk --step_size 1 --input_dropout 0.4 --batch_norm --add_source --grb_split --dataset arxiv
+python -u graph_node_class_Nash_GNN.py --grb_mode full --runs 1 --model graphcon --time 3  --method euler --function icnn --gpu 1 --hidden_dim 128 --eval_robo_blk --step_size 1 --input_dropout 0.4 --batch_norm --add_source --grb_split --dataset arxiv
 ```
 
-### 2) Large-scale Node Classification
+### 3) Graph Classification
 ```bash
-python -u graph_node_class_Nash_GNN.py --grb_mode full --runs 1 --model graphcon --time 3  --method euler --function ICNN --gpu 1 --hidden_dim 128 --eval_robo_blk --step_size 1 --input_dropout 0.4 --batch_norm --add_source --grb_split --dataset arxiv
+python -u graph_classification.py -data mutag -batch 128 -hid_dim 64 -lr 0.01 -model 'GCN' -gpu 0 
 ```
+
+### 4) Brain connectome Classification
+
+# python -u gnn_misg_disease_5fold.py --dataset 'adni'  --inductive --eval_robo --eval_attack 'vanilla' --runs 5 --model graphbel --gpu 0 > /ram/USERS/bendan/NIPS2024/NeurIPS-2023-HANG-Robustness/graph_cls_results/"adni_graphbel5".txt
